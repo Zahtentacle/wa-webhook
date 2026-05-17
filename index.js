@@ -1,11 +1,17 @@
 const express = require('express')
 const app = express()
 app.use(express.json())
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*')
+  res.header('Access-Control-Allow-Headers', '*')
+  next()
+})
 
 const VERIFY_TOKEN = 'token123'
-const TOKEN = 'EAAOQZB1AbqfsBRVFTrZBVnHTN58yBeimQ1ZAl7Fc4KMWHaJwmhe7ZCAl0YYscge8tLj1OCdmLS1FufngbOMHdMKaAhAMiRx5WUdAQdyh47XYiqUUyWkDFk7VXtShpudM0TehucGCNOz4EOJmHIZCfnMvsH7yIIGhWxkdhQ9nzmsijyHmH1zLEslBsGqWm1vqF'
-const PHONE_ID = '1078926971975097'
+let messages = []
+let health = { lastPing: null, totalReceived: 0 }
 
+// Webhook verify
 app.get('/webhook', (req, res) => {
   if (req.query['hub.verify_token'] === VERIFY_TOKEN) {
     res.send(req.query['hub.challenge'])
@@ -14,27 +20,40 @@ app.get('/webhook', (req, res) => {
   }
 })
 
-app.post('/webhook', async (req, res) => {
-  const msg = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]
-  if (!msg) return res.sendStatus(200)
-
-  const from = msg.from
-  const text = msg.text?.body || ''
-
-  await fetch(`https://graph.facebook.com/v18.0/${PHONE_ID}/messages`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to: from,
-      text: { body: `Halo! Pesan kamu sudah kami terima 👋` }
-    })
-  })
-
+// Webhook receive
+app.post('/webhook', (req, res) => {
+  const entry = req.body?.entry?.[0]?.changes?.[0]?.value
+  const msg = entry?.messages?.[0]
+  if (msg) {
+    const incoming = {
+      id: msg.id,
+      from: msg.from,
+      name: entry?.contacts?.[0]?.profile?.name || msg.from,
+      text: msg.text?.body || '',
+      time: new Date().toISOString(),
+      timestamp: msg.timestamp
+    }
+    messages.unshift(incoming)
+    if (messages.length > 500) messages = messages.slice(0, 500)
+    health.totalReceived++
+    health.lastPing = new Date().toISOString()
+    console.log('MSG:', incoming)
+  }
   res.sendStatus(200)
 })
 
-app.listen(3000, () => console.log('Running'))
+// GET messages (dashboard polling)
+app.get('/messages', (req, res) => {
+  const since = req.query.since
+  const filtered = since
+    ? messages.filter(m => new Date(m.time) > new Date(since))
+    : messages.slice(0, 50)
+  res.json({ messages: filtered, health })
+})
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', ...health, total: messages.length })
+})
+
+app.listen(3000, () => console.log('Ghost Webhook Running'))
